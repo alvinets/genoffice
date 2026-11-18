@@ -21,12 +21,12 @@ import {
 
 /** transport scripted turn by turn; exposes the callbacks for manual driving */
 function scriptedTransport(script: Array<(cb: AgentStreamCallbacks) => void>): AgentTransport & {
-  requests: Array<{ messageCount: number; toolCount: number; system: string }>
+  requests: Array<{ messageCount: number; toolCount: number; system: string; messagesJson: string }>
   cancels: number
 } {
   let turn = 0
   const transport = {
-    requests: [] as Array<{ messageCount: number; toolCount: number; system: string }>,
+    requests: [] as Array<{ messageCount: number; toolCount: number; system: string; messagesJson: string }>,
     cancels: 0,
     lastCallbacks: null as AgentStreamCallbacks | null,
     stream(
@@ -37,6 +37,7 @@ function scriptedTransport(script: Array<(cb: AgentStreamCallbacks) => void>): A
         messageCount: request.messages.length,
         toolCount: request.tools.length,
         system: request.system,
+        messagesJson: JSON.stringify(request.messages),
       })
       transport.lastCallbacks = cb
       const step = script[turn++]
@@ -402,9 +403,11 @@ describe('AgentLoop', () => {
       events: { onError, onDone },
     })
     loop.run('go')
-    for (let i = 0; i < 14; i++) await flush()
-    // the first turn seeds the signature; three identical repeats abort the run
-    expect(transport.requests).toHaveLength(4)
+    for (let i = 0; i < 20; i++) await flush()
+    // the first identical repeat delivers the stop-re-reading nudge, then three
+    // more identical turns abort the run
+    expect(transport.requests).toHaveLength(5)
+    expect(transport.requests[2]!.messagesJson).toContain('[System] Recent tool calls')
     expect(onError).toHaveBeenCalledWith(expect.stringContaining('kept repeating'))
     expect(onDone).not.toHaveBeenCalled()
     expect(loop.busy).toBe(false)

@@ -517,6 +517,8 @@ export class AgentLoop<TSnapshot = unknown> {
   /** signature (text + tool calls) of the previous turn, for the identical-turn guard */
   private lastTurnSig = ''
   private identicalTurns = 0
+  /** the identical-turn streak already received the stop-re-reading nudge once */
+  private identicalNudged = false
   /** non-mutating calls since the last edit: (tool, input) → output hash, and the set of (tool, output) hashes */
   private readOutputs = new Map<string, string>()
   /** how often each (tool, input) was called since the last edit */
@@ -635,6 +637,7 @@ export class AgentLoop<TSnapshot = unknown> {
     this.inputParseFails = 0
     this.lastTurnSig = ''
     this.identicalTurns = 0
+    this.identicalNudged = false
     this.allErrorTurns = 0
     this.readOutputs.clear()
     this.readOutputSigs.clear()
@@ -1405,14 +1408,23 @@ export class AgentLoop<TSnapshot = unknown> {
     // re-emitting the same text, tool calls AND tool outputs is looping, not
     // progressing. Turns that mutated the artifact are exempt (repeating an
     // identical edit is legitimate progress), and changing outputs break the
-    // streak (so poll-style tools survive).
+    // streak (so poll-style tools survive). The first identical repeat gets the
+    // redundant-read nudge before the run is allowed to abort: aborting without
+    // it left the model no instruction to stop re-reading (the redundant-read
+    // nudge fires at turn 4, past this guard's turn-3 abort).
     const turnSig = JSON.stringify([
       this.turnText,
       toolCalls.map(({ name, input }) => [name, input]),
       results.map((r) => r.output),
     ])
     if (turnSig === this.lastTurnSig && !turnMutated) {
-      if (++this.identicalTurns >= MAX_IDENTICAL_TURNS) {
+      if (!this.identicalNudged) {
+        this.identicalNudged = true
+        this.identicalTurns = 0
+        this.redundantReadTurns = 0
+        const last = results[results.length - 1]
+        if (last) last.output = `${last.output}\n\n${REDUNDANT_READ_NOTE}`
+      } else if (++this.identicalTurns >= MAX_IDENTICAL_TURNS) {
         this.running = false
         this.rollbackFailedRun()
         events?.onError?.(
@@ -1423,6 +1435,7 @@ export class AgentLoop<TSnapshot = unknown> {
     } else {
       this.lastTurnSig = turnSig
       this.identicalTurns = 0
+      this.identicalNudged = false
     }
 
     this.turns++
